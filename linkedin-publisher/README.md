@@ -10,6 +10,8 @@ can run Python) to **draft, preview, and publish text posts to LinkedIn** throug
   works on any laptop.
 - **A local archive of every draft.** `scripts/stage_draft.py` keeps each version in
   `<workspace>/posts/`.
+- **Google Drive drafts.** Search Drive by name, then import the selected Google Doc, `.txt`, `.md`,
+  or `.docx` as a staged draft before previewing it.
 
 ## Contents
 
@@ -56,10 +58,33 @@ A variable that is already set in the real environment always beats the file's v
 fills in what is missing. `.env` is git-ignored in this repository — do not commit it.
 
 Required keys: `COMPOSIO_API_KEY`, `COMPOSIO_USER_ID`.
-Optional: `COMPOSIO_CONNECTED_ACCOUNT_ID`, `LINKEDIN_AUTHOR_URN`, `LINKEDIN_AUTH_CONFIG_ID`
-(the last one is only for the one-time LinkedIn connection, which happens outside this bundle).
+Optional: `COMPOSIO_CONNECTED_ACCOUNT_ID`, `GOOGLEDRIVE_CONNECTED_ACCOUNT_ID`,
+`LINKEDIN_AUTHOR_URN`, `LINKEDIN_AUTH_CONFIG_ID`, `GOOGLEDRIVE_AUTH_CONFIG_ID`.
+The auth config IDs are only for the matching one-time connection helpers outside this bundle.
 
 ## Quickstart
+
+Connect **Google Drive** to the same Composio project and `COMPOSIO_USER_ID` as LinkedIn. Grant
+read access to the client's drafts. If several Drive accounts are connected, set
+`GOOGLEDRIVE_CONNECTED_ACCOUNT_ID` in `.env` to select the intended one. Drive import uses Composio's
+authenticated proxy; the API key needs proxy execute permission. A Google Doc is exported as plain
+text; Drive `.txt`, `.md`, and `.docx` files are downloaded and their text is staged. No Drive file is
+modified, and no post is published by the import command.
+In the full repository, create a Google Drive auth config in the Composio dashboard, set
+`GOOGLEDRIVE_AUTH_CONFIG_ID` in `.env`, and run `python conn_googledrive_composio.py` once to get the
+client authorization URL. The connection helper is outside the standalone bundle.
+
+```bash
+# Find candidates by filename (read-only); select the intended ID from the result.
+python3 scripts/drive_draft.py --search "campaign draft" --json
+
+# Import that exact file (or use --url with a Google Docs/Drive link).
+python3 scripts/drive_draft.py --file-id FILE_ID --workspace /absolute/path/to/workspace --json
+
+# Preview the returned path, obtain approval, then publish that same staged file.
+python3 scripts/post_linkedin.py --dry-run --file /absolute/path/to/workspace/posts/DATE-draft.md --json
+python3 scripts/post_linkedin.py --publish --file /absolute/path/to/workspace/posts/DATE-draft.md --json
+```
 
 ```bash
 # 1. check the setup (read-only, secrets masked)

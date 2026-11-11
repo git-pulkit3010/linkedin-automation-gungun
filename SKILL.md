@@ -1,6 +1,6 @@
 ---
 name: linkedin-posting
-description: Use when drafting, previewing, or publishing a LinkedIn text post through this repository's Composio connection, including posts sourced from txt, md, or docx files. Repo-bound entry point; see linkedin-publisher/SKILL.md for the full conversational workflow.
+description: Use when drafting, previewing, or publishing a LinkedIn text post through this repository's Composio connection, including drafts retrieved from Google Drive. Repo-bound entry point; see linkedin-publisher/SKILL.md for the full conversational workflow.
 ---
 
 # LinkedIn posting (repository entry point)
@@ -29,6 +29,12 @@ python3 linkedin-publisher/scripts/doctor.py
 ```
 
 ## Inputs
+
+For a draft in Google Drive, search by filename with
+`python3 linkedin-publisher/scripts/drive_draft.py --search "phrase" --json`, show matching titles
+and IDs when there is ambiguity, then import the selected file with `--file-id ID --workspace "$PWD"
+--json` (or `--url LINK`). The returned local `path` is the staged snapshot to preview and publish.
+The Drive command never posts. Google Drive must be connected to the same Composio user as LinkedIn.
 
 Use either inline text or one local file as the post body. Supported files are UTF-8 `.txt` and
 `.md`, and `.docx`. The file content becomes the LinkedIn post text; a file is not uploaded as an

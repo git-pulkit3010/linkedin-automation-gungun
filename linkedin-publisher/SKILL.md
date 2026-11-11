@@ -1,6 +1,6 @@
 ---
 name: linkedin-publisher
-description: Use when drafting, previewing, or publishing a LinkedIn text post through Composio. Triggers include "post to LinkedIn", "publish my LinkedIn post", "draft a LinkedIn post", "put this on LinkedIn", or any request to send a drafted text post to a LinkedIn profile. Standard-library-only Python scripts; every post is previewed and explicitly approved before it goes live.
+description: Use when drafting, retrieving a Google Drive draft, previewing, or publishing a LinkedIn text post through Composio. Standard-library-only Python scripts; every post is previewed and explicitly approved before it goes live.
 ---
 
 # LinkedIn publisher
@@ -31,6 +31,7 @@ analytics, or any other network. This skill posts plain text only.
    LINKEDIN_AUTH_CONFIG_ID=...     # optional - only for the one-time account connection
    COMPOSIO_CONNECTED_ACCOUNT_ID=  # optional - pin one account when several are ACTIVE
    LINKEDIN_AUTHOR_URN=            # optional - urn:li:person:... if auto-lookup fails
+   GOOGLEDRIVE_CONNECTED_ACCOUNT_ID=  # optional - pin one Google Drive account
    ```
 
 3. Verify with the read-only checker. It prints what it found, masks every secret, and never posts:
@@ -44,6 +45,10 @@ analytics, or any other network. This skill posts plain text only.
 
 4. Connect the LinkedIn account to Composio once, from a machine that has the optional `composio`
    SDK (see the repo README). This skill itself needs nothing installed.
+
+5. For Drive drafts, connect Google Drive to the **same** Composio project and user ID, with read
+   access to the client's draft files. The Composio API key needs proxy execute permission. If there
+   are multiple ACTIVE Drive connections, pin the correct one in `.env`.
 
 Never ask the user to paste their API key into chat, never write it into a file you generate, and
 never echo it in a command or a log.
@@ -91,6 +96,21 @@ hashtags inside the body. Target 600-1300 characters. LinkedIn's hard limit is 3
 enforces it (`--max-chars`, default 3000).
 
 ### c. Stage the draft
+
+If the source is on Google Drive, first locate it. Use the user's exact link when available; otherwise
+search by filename and show the matching titles/IDs if more than one is plausible. Do not guess which
+document they meant. Import the selected file into the workspace's `posts/` directory:
+
+```bash
+python3 <skill_root>/scripts/drive_draft.py --search "filename phrase" --json
+python3 <skill_root>/scripts/drive_draft.py --file-id <selected ID> --workspace <workspace> --json
+# Or use --url <Google Docs/Drive link> instead of --file-id.
+```
+
+The importer accepts Google Docs and stored `.txt`, `.md`, or `.docx` files. It returns the Drive
+source metadata and local staged `path`; it never publishes. Review the imported text and format it
+for LinkedIn plain text. If changes are needed, save a new staged version with `stage_draft.py`. Show
+the user which Drive document was used and retain the staged file for the preview and publish steps.
 
 Archive every iteration so the user keeps a local copy:
 

@@ -18,6 +18,7 @@ Publish (real post):
 """
 
 import argparse
+import io
 import json
 import os
 import re
@@ -131,30 +132,35 @@ def read_post_file(path):
     if suffix not in {'.txt', '.md', '.docx'}:
         raise SetupError('Unsupported post file type: ' + suffix + '. Use .txt, .md, or .docx.')
     try:
-        if suffix == '.docx':
-            with zipfile.ZipFile(path) as archive:
-                document = ElementTree.fromstring(archive.read('word/document.xml'))
-            word = '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}'
-            paragraphs = []
-            for paragraph in document.iter(word + 'p'):
-                parts = []
-                for element in paragraph.iter():
-                    if element.tag == word + 't':
-                        parts.append(element.text or '')
-                    elif element.tag == word + 'tab':
-                        parts.append('\t')
-                    elif element.tag in {word + 'br', word + 'cr'}:
-                        parts.append('\n')
-                paragraphs.append(''.join(parts))
-            content = '\n'.join(paragraphs)
-        else:
-            content = path.read_text(encoding='utf-8-sig')
+        content = read_post_bytes(path.read_bytes(), suffix)
     except (OSError, UnicodeError, zipfile.BadZipFile, KeyError,
             ElementTree.ParseError) as exc:
         raise SetupError(f'Cannot read post file {path}: {exc}') from exc
     if not content.strip():
         raise SetupError(f'Post file {path} contains no text.')
     return content
+
+
+def read_post_bytes(data, suffix):
+    """Extract text from downloaded Drive bytes using the same rules as local files."""
+    if suffix == '.docx':
+        with zipfile.ZipFile(io.BytesIO(data)) as archive:
+            document = ElementTree.fromstring(archive.read('word/document.xml'))
+        word = '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}'
+        paragraphs = []
+        for paragraph in document.iter(word + 'p'):
+            parts = []
+            for element in paragraph.iter():
+                if element.tag == word + 't':
+                    parts.append(element.text or '')
+                elif element.tag == word + 'tab':
+                    parts.append('\t')
+                elif element.tag in {word + 'br', word + 'cr'}:
+                    parts.append('\n')
+            paragraphs.append(''.join(parts))
+        return '\n'.join(paragraphs)
+    # Path.read_text() uses universal newlines; keep local and Drive inputs equal.
+    return data.decode('utf-8-sig').replace('\r\n', '\n').replace('\r', '\n')
 
 
 def extract_hashtags(text):

@@ -10,7 +10,8 @@ builds the exact post payload before anything is sent — with a strict `--dry-r
 Everything in the `linkedin-publisher/` skill bundle is **Python 3.8+ standard library only**: no
 `pip install`, no virtualenv. The root `post_linkedin.py` is a thin wrapper that loads that bundle,
 so the repository CLI and the portable bundle are the same code. Only the optional one-time
-connection helper (`conn_linkedin_composio.py`) needs third-party packages.
+connection helpers (`conn_linkedin_composio.py` and `conn_googledrive_composio.py`) need third-party
+packages.
 
 ## Project layout
 
@@ -21,9 +22,11 @@ connection helper (`conn_linkedin_composio.py`) needs third-party packages.
 | `linkedin-publisher/SKILL.md` | Conversational rules for the agent: draft → stage → preview → approve → publish |
 | `linkedin-publisher/scripts/post_linkedin.py` | Canonical CLI: inspect, dry-run, or publish a LinkedIn post |
 | `linkedin-publisher/scripts/stage_draft.py` | Archives each draft into `<workspace>/posts/` |
+| `linkedin-publisher/scripts/drive_draft.py` | Finds a Google Drive document and imports its text into the draft archive |
 | `linkedin-publisher/scripts/doctor.py` | Read-only setup checker (reports keys masked, never posts) |
 | `linkedin-publisher/tests/test_post_linkedin.py` | Offline unit tests for the bundle (no network, no credentials) |
 | `conn_linkedin_composio.py` | One-time setup: prints the URL to connect your LinkedIn account to Composio |
+| `conn_googledrive_composio.py` | One-time setup: prints the URL to connect the client's Google Drive account |
 | `test_composio_conn.py` | Read-only end-to-end checks: API key, tool catalog, connected account, profile endpoint |
 | `test_post_file.py` | Offline unit tests (file parsing + CLI behavior, no network) |
 | `SKILL.md` | Repo-bound skill entry point (relative paths; points at the bundle) |
@@ -62,11 +65,13 @@ which file was picked up and which keys are present (values are masked).
 COMPOSIO_API_KEY=...              # Composio API key
 COMPOSIO_USER_ID=...              # The Composio end-user ID the LinkedIn account is linked to
 
-# --- Required only for conn_linkedin_composio.py (one-time connection) ---
+# --- Required only for the matching one-time connection helper ---
 LINKEDIN_AUTH_CONFIG_ID=...       # Auth config (integration) ID for the LinkedIn toolkit
+GOOGLEDRIVE_AUTH_CONFIG_ID=...    # Only for the one-time Google Drive connection helper
 
 # --- Optional ---
 # COMPOSIO_CONNECTED_ACCOUNT_ID=...   # Pin a specific account when several ACTIVE LinkedIn accounts exist
+# GOOGLEDRIVE_CONNECTED_ACCOUNT_ID=... # Pin one Drive account when several are ACTIVE
 # LINKEDIN_AUTHOR_URN=urn:li:person:xxxx  # Override the author; otherwise auto-resolved via profile lookup
 ```
 
@@ -92,8 +97,8 @@ run on the Python standard library: `urllib` for the Composio v3.1 REST calls, a
 reader, `zipfile` + `xml.etree` for `.docx`. Skip this section unless you need the one-time
 connection helper.
 
-Only `conn_linkedin_composio.py` needs third-party packages (it uses the `composio` SDK), so install
-them in a virtualenv just for that one-time step:
+Only the one-time connection helpers need third-party packages (they use the `composio` SDK), so
+install them in a virtualenv just for that step:
 
 ```bash
 cd linkedin-automation-gungun
@@ -193,6 +198,25 @@ information is one object: `mode`, `env_file`, `account_id`, `user_id`, `author`
 > **Exit codes:** `0` on success, `1` on any setup/network/API error (message goes to stderr).
 
 ### Recommended workflow
+
+For a client's Google Drive draft, first connect Google Drive to the **same** Composio project and
+`COMPOSIO_USER_ID` as LinkedIn, with read access to the client's draft files. The API key needs
+Composio proxy execute permission. Search Drive by filename, select the intended file ID, and import
+it into the local archive:
+
+Create a Google Drive OAuth auth config in the Composio dashboard, put its ID in
+`GOOGLEDRIVE_AUTH_CONFIG_ID`, then run `python conn_googledrive_composio.py` once and open the printed
+redirect URL. The client must authorize access to the Drive containing the drafts.
+
+```bash
+python3 linkedin-publisher/scripts/drive_draft.py --search "campaign draft" --json
+python3 linkedin-publisher/scripts/drive_draft.py --file-id FILE_ID --workspace "$PWD" --json
+# A Google Docs/Drive link also works: --url "https://docs.google.com/document/d/FILE_ID/edit"
+```
+
+The importer reads Google Docs, `.txt`, `.md`, and `.docx` files; it never publishes or edits Drive.
+Use the returned `path` for the existing dry-run, approval, and publish steps below. If multiple
+documents match, inspect their names and modified dates with the user before selecting one.
 
 1. Stage the draft: `python3 linkedin-publisher/scripts/stage_draft.py --workspace "$PWD" --stdin`
    writes `posts/YYYY-MM-DD-<slug>.md` and prints that path.

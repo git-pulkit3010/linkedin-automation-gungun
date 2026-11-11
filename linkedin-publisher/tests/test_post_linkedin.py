@@ -867,7 +867,7 @@ class DoctorTests(unittest.TestCase):
     def test_posts_directory_is_reported(self):
         code, stdout, _ = self.run_doctor()
         self.assertIn('posts directory', stdout)
-        self.assertIn('/posts', stdout)
+        self.assertRegex(stdout, r'posts directory\s*: .*[/\\]posts')
 
     def test_check_api_network_error_is_skipped_not_failed(self):
         code, stdout, _ = self.run_doctor(['--check-api'], api=self.NetworkBoom)
