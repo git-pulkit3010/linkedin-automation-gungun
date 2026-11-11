@@ -4,11 +4,16 @@ import json
 import os
 import sys
 from post_linkedin import (ComposioAPI, SetupError, POST_SLUG, PROFILE_SLUG,
-                           active_linkedin_account, author_from_profile)
+                           active_linkedin_account, apply_env_file, author_from_profile,
+                           resolve_env_file)
 
 
 def main():
     try:
+        env_path, env_source = resolve_env_file(None)
+        if env_path:
+            apply_env_file(env_path)
+            print('0. Configuration: {} (from {})'.format(env_path, env_source))
         api = ComposioAPI(os.getenv('COMPOSIO_API_KEY'))
         print('1. Testing Composio API key (GET /toolkits/linkedin)...')
         toolkit = api.request('GET', '/toolkits/linkedin')

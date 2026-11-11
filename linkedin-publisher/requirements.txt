@@ -1,0 +1,9 @@
+# linkedin-publisher needs NO third-party packages.
+#
+# Every script in this bundle runs on the Python 3.8+ standard library only:
+# urllib for the Composio REST calls, a built-in .env reader for configuration,
+# zipfile + xml.etree for .docx files. There is nothing to pip install.
+#
+# If you want the optional one-time LinkedIn connection helper from the parent
+# repository (conn_linkedin_composio.py), that script is separate and does need
+# the Composio SDK:  python -m pip install composio
