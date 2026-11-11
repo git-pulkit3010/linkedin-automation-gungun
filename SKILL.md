@@ -1,6 +1,6 @@
 ---
 name: linkedin-posting
-description: Use when drafting, previewing, or publishing a LinkedIn text post through this repository's Composio connection, including drafts retrieved from Google Drive. Repo-bound entry point; see linkedin-publisher/SKILL.md for the full conversational workflow.
+description: Use when drafting, previewing, or publishing a LinkedIn text post through this repository's Composio connection, including drafts retrieved from Google Drive with the host's native Drive connector. Repo-bound entry point; see linkedin-publisher/SKILL.md for the full conversational workflow.
 ---
 
 # LinkedIn posting (repository entry point)

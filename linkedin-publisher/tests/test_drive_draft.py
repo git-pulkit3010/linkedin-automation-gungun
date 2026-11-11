@@ -1,145 +1,245 @@
-"""Offline checks for Google Drive discovery and draft import."""
+#!/usr/bin/env python3
+"""Tests for drive_draft.py — the Cowork native Drive connector path."""
 
-import contextlib
-import importlib.util
 import io
 import json
 import os
+import subprocess
+import sys
 import tempfile
 import unittest
-import zipfile
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
-from unittest.mock import patch
+from zipfile import ZipFile, ZIP_DEFLATED
 
-SCRIPTS = Path(__file__).resolve().parents[1] / 'scripts'
-spec = importlib.util.spec_from_file_location('drive_draft', str(SCRIPTS / 'drive_draft.py'))
-DRIVE = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(DRIVE)
+BUNDLE = Path(__file__).resolve().parent.parent
+SCRIPT = BUNDLE / 'scripts' / 'drive_draft.py'
 
 
-class FakeAPI:
-    def __init__(self, key='key'):
-        self.calls = []
+def load(name):
+    import importlib.util
+    spec = importlib.util.spec_from_file_location('drivetest_' + name,
+                                                  str(BUNDLE / 'scripts' / (name + '.py')))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
-    def accounts(self):
-        return [{'id': 'drive-1', 'user_id': 'user-1', 'status': 'ACTIVE',
-                 'toolkit': {'slug': 'googledrive'}}]
 
-    def request(self, method, path, *, body=None, params=None):
-        self.calls.append((method, path, body))
-        endpoint = body['endpoint']
-        parameters = {p['name']: p['value'] for p in body['parameters']}
-        if endpoint == DRIVE.DRIVE_API:
-            return {'status': 200, 'data': {'files': [
-                {'id': 'doc-1', 'name': 'Draft', 'mimeType': DRIVE.DOC_MIME},
-                {'id': 'sheet-1', 'name': 'Sheet',
-                 'mimeType': 'application/vnd.google-apps.spreadsheet'}]}}
-        if endpoint.endswith('/doc-1/export'):
-            assert parameters['mimeType'] == 'text/plain'
-            return {'status': 200, 'binary_data': {'url':
-                    'https://bucket.s3.amazonaws.com/draft?signature=secret'}}
-        if endpoint.endswith('/doc-1'):
-            return {'status': 200, 'data': {'id': 'doc-1', 'name': 'Draft',
-                    'mimeType': DRIVE.DOC_MIME, 'trashed': False}}
-        raise AssertionError(endpoint)
+drive = load('drive_draft')
+cli = load('post_linkedin')
+stage = load('stage_draft')
+
+DOCX_PARAGRAPHS = (
+    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+    '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+    '<w:body><w:p><w:r><w:t>Word draft from Drive</w:t></w:r></w:p>'
+    '<w:p><w:r><w:t>Second paragraph</w:t></w:r></w:p></w:body></w:document>')
+
+
+def make_docx(path):
+    with ZipFile(path, 'w', ZIP_DEFLATED) as archive:
+        archive.writestr('[Content_Types].xml', '<Types/>')
+        archive.writestr('word/document.xml', DOCX_PARAGRAPHS)
+    return path
 
 
 class DriveDraftTests(unittest.TestCase):
-    def test_search_filters_unsupported_files_and_escapes_query(self):
-        api = FakeAPI()
-        files = DRIVE.search(api, 'user-1', 'drive-1', "Ann's draft")
-        self.assertEqual([f['id'] for f in files], ['doc-1'])
-        params = {p['name']: p['value'] for p in api.calls[0][2]['parameters']}
-        self.assertIn("Ann\\'s draft", params['q'])
+    def setUp(self):
+        self.workspace = Path(tempfile.mkdtemp())
+        self.json_env = dict(os.environ)
+        self.json_env.pop('COMPOSIO_API_KEY', None)
+        self.json_env.pop('COMPOSIO_USER_ID', None)
 
-    def test_drive_url_extracts_id_and_rejects_other_hosts(self):
-        self.assertEqual(DRIVE.file_id_from_url(
-            'https://docs.google.com/document/d/doc-1/edit'), 'doc-1')
-        self.assertEqual(DRIVE.file_id_from_url(
-            'https://drive.google.com/open?id=doc-1'), 'doc-1')
-        with self.assertRaises(ValueError):
-            DRIVE.file_id_from_url('https://docs.google.com.evil.test/document/d/doc-1/edit')
+    def run_cli(self, *argv, stdin=None):
+        env = dict(self.json_env)
+        env.pop('LINKEDIN_PUBLISHER_ENV_FILE', None)
+        process = subprocess.run([sys.executable, str(SCRIPT)] + list(argv),
+                                 input=stdin, capture_output=True, text=True, env=env,
+                                 cwd=str(self.workspace), timeout=60)
+        return process
 
-    def test_import_stages_exact_document_text_and_never_posts(self):
-        api = FakeAPI()
-        with tempfile.TemporaryDirectory() as directory:
-            env = Path(directory) / '.env'
-            env.write_text('COMPOSIO_API_KEY=key\nCOMPOSIO_USER_ID=user-1\n', encoding='utf-8')
-            argv = ['drive_draft.py', '--file-id', 'doc-1', '--workspace', directory,
-                    '--env-file', str(env), '--json']
-            out = io.StringIO()
-            with patch.object(DRIVE.sys, 'argv', argv), \
-                 patch.dict(os.environ, {}, clear=True), \
-                 patch.object(DRIVE, 'load_script', side_effect=lambda name:
-                              _fake_cli(api) if name == 'post_linkedin' else _real_stage()), \
-                 patch.object(DRIVE, 'download_bytes', return_value=b'Exact body\n\n#Tag'), \
-                 contextlib.redirect_stdout(out):
-                self.assertEqual(DRIVE.main(), 0)
-            result = json.loads(out.getvalue())
-            self.assertEqual(Path(result['path']).read_text(encoding='utf-8'),
-                             'Exact body\n\n#Tag\n')
-            self.assertEqual(result['source']['id'], 'doc-1')
-            self.assertEqual(result['mode'], 'import')
-            self.assertEqual(len(api.calls), 2)
+    # -- staging -------------------------------------------------------------- #
 
-    def test_docx_content_uses_existing_parser(self):
-        buffer = io.BytesIO()
-        with zipfile.ZipFile(buffer, 'w') as archive:
-            archive.writestr('word/document.xml',
-                             '<w:document xmlns:w="http://schemas.openxmlformats.org/'
-                             'wordprocessingml/2006/main"><w:body><w:p><w:r>'
-                             '<w:t>Word draft</w:t></w:r></w:p></w:body></w:document>')
-        cli = _fake_cli(FakeAPI())
-        self.assertEqual(cli.read_post_bytes(buffer.getvalue(), '.docx'), 'Word draft')
+    def test_stages_exported_google_doc_with_name_slug(self):
+        download = self.workspace / 'drive-export.txt'
+        download.write_text('Launch day is here.\n\n#ProductLaunch body text.\n', encoding='utf-8')
+        process = self.run_cli('--file', str(download), '--name', 'Client Launch Post',
+                               '--id', '1AbC_dEf', '--link', 'https://docs.google.com/document/d/1AbC_dEf/edit',
+                               '--workspace', str(self.workspace), '--json')
+        self.assertEqual(process.returncode, 0, process.stderr)
+        out = json.loads(process.stdout)
+        self.assertEqual(out['mode'], 'import')
+        self.assertEqual(out['source'], {'name': 'Client Launch Post', 'id': '1AbC_dEf',
+                                        'link': 'https://docs.google.com/document/d/1AbC_dEf/edit'})
+        path = Path(out['path'])
+        self.assertEqual(path.parent, self.workspace / 'posts')
+        self.assertTrue('client-launch-post' in path.name, path.name)
+        self.assertTrue(path.name.endswith('.txt'), path.name)
+        self.assertEqual(out['char_count'], len(path.read_text(encoding='utf-8')))
+        self.assertIn('Launch day is here.', path.read_text(encoding='utf-8'))
 
-    def test_stored_text_file_is_downloaded_as_media(self):
-        api = FakeAPI()
-        item = {'id': 'text-1', 'name': 'draft.md', 'mimeType': 'text/markdown'}
-        response = {'status': 200, 'binary_data': {'url':
-                    'https://bucket.s3.amazonaws.com/draft?signature=secret'}}
-        with patch.object(DRIVE, 'proxy', return_value=response) as proxied, \
-             patch.object(DRIVE, 'download_bytes', return_value=b'From Drive\n'):
-            text = DRIVE.import_text(api, 'user-1', 'drive-1', item, _real_cli())
-        self.assertEqual(text, 'From Drive\n')
-        self.assertEqual(proxied.call_args.args[3], DRIVE.DRIVE_API + '/text-1')
-        self.assertIn(('alt', 'media'), proxied.call_args.args[4])
+    def test_markdown_source_keeps_txt_and_md_extensions(self):
+        for name, ext in (('notes.txt', 'txt'), ('draft.md', 'md')):
+            download = self.workspace / name
+            download.write_text('body text\n', encoding='utf-8')
+            process = self.run_cli('--file', str(download), '--workspace', str(self.workspace), '--json')
+            self.assertEqual(process.returncode, 0, process.stderr)
+            out = json.loads(process.stdout)
+            self.assertTrue(Path(out['path']).suffix == '.' + ext, out['path'])
 
-    def test_download_rejects_untrusted_host(self):
-        with self.assertRaisesRegex(ValueError, 'unexpected download host'):
-            DRIVE.download_bytes('https://example.org/private')
+    def test_google_doc_export_is_normalised(self):
+        raw = b'line one\r\n\r\n#Tagged\r\n'
+        download = self.workspace / 'export.txt'
+        download.write_bytes(raw)
+        process = self.run_cli('--file', str(download), '--workspace', str(self.workspace), '--json')
+        self.assertEqual(process.returncode, 0, process.stderr)
+        out = json.loads(process.stdout)
+        content = Path(out['path']).read_text(encoding='utf-8')
+        self.assertNotIn('\r', content)
+        self.assertEqual(content, 'line one\n\n#Tagged\n')
 
-    def test_multiple_drive_accounts_require_explicit_selection(self):
-        api = FakeAPI()
-        api.accounts = lambda: [
-            {'id': name, 'user_id': 'user-1', 'status': 'ACTIVE',
-             'toolkit': {'slug': 'googledrive'}} for name in ('a', 'b')]
-        with patch.dict(os.environ, {}, clear=True):
-            with self.assertRaisesRegex(ValueError, 'Multiple ACTIVE'):
-                DRIVE.drive_account(api, 'user-1')
-            os.environ['GOOGLEDRIVE_CONNECTED_ACCOUNT_ID'] = 'b'
-            self.assertEqual(DRIVE.drive_account(api, 'user-1')['id'], 'b')
+    def test_docx_download_uses_the_same_parser_as_local_files(self):
+        download = make_docx(self.workspace / 'raw.docx')
+        process = self.run_cli('--file', str(download), '--workspace', str(self.workspace), '--json')
+        self.assertEqual(process.returncode, 0, process.stderr)
+        out = json.loads(process.stdout)
+        content = Path(out['path']).read_text(encoding='utf-8')
+        self.assertEqual(content.strip(), 'Word draft from Drive\nSecond paragraph')
+        self.assertTrue(Path(out['path']).suffix == '.md')
 
+    def test_stdin_export_is_staged(self):
+        process = self.run_cli('--stdin', '--name', 'Piped doc', '--workspace',
+                               str(self.workspace), '--json',
+                               stdin='Piped draft body\r\n\r\n#Tag\r\n')
+        self.assertEqual(process.returncode, 0, process.stderr)
+        out = json.loads(process.stdout)
+        self.assertIn('Piped draft body', Path(out['path']).read_text(encoding='utf-8'))
+        self.assertEqual(out['source'], {'name': 'Piped doc'})
+        self.assertEqual(out['char_count'], 23)
 
-def _fake_cli(api):
-    module = _real_cli()
-    module.ComposioAPI = lambda key: api
-    return module
+    def test_plain_output_prints_only_the_path(self):
+        download = self.workspace / 'x.txt'
+        download.write_text('quiet path\n', encoding='utf-8')
+        process = self.run_cli('--file', str(download), '--workspace', str(self.workspace))
+        self.assertEqual(process.returncode, 0, process.stderr)
+        lines = process.stdout.strip().splitlines()
+        self.assertEqual(len(lines), 1)
+        self.assertTrue(Path(lines[0]).is_file())
 
+    def test_second_version_of_the_same_document_does_not_overwrite(self):
+        for body in ('first text', 'second text'):
+            download = self.workspace / 'same.txt'
+            download.write_text(body + '\n', encoding='utf-8')
+            self.run_cli('--file', str(download), '--name', 'Same Doc',
+                         '--workspace', str(self.workspace))
+        names = sorted(p.name for p in (self.workspace / 'posts').iterdir())
+        self.assertEqual(names, ['2026-11-12-same-doc-2.txt', '2026-11-12-same-doc.txt'], names)
 
-def _real_cli():
-    spec = importlib.util.spec_from_file_location('drive_test_post',
-                                                  str(SCRIPTS / 'post_linkedin.py'))
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    def test_needs_no_composio_credentials_and_no_network(self):
+        """Staging a Drive draft must work with no key and no connectivity."""
+        download = self.workspace / 'offline.txt'
+        download.write_text('staged without Composio\n', encoding='utf-8')
+        env = {k: v for k, v in os.environ.items()
+               if k not in {'COMPOSIO_API_KEY', 'COMPOSIO_USER_ID',
+                            'COMPOSIO_CONNECTED_ACCOUNT_ID', 'GOOGLEDRIVE_CONNECTED_ACCOUNT_ID',
+                            'LINKEDIN_AUTHOR_URN', 'LINKEDIN_PUBLISHER_ENV_FILE'}}
+        process = subprocess.run([sys.executable, str(SCRIPT), '--file', str(download),
+                                  '--workspace', str(self.workspace), '--json'],
+                                 capture_output=True, text=True, env=env, timeout=60)
+        self.assertEqual(process.returncode, 0, process.stderr)
+        out = json.loads(process.stdout)
+        self.assertTrue(Path(out['path']).is_file())
 
+    # -- guards --------------------------------------------------------------- #
 
-def _real_stage():
-    spec = importlib.util.spec_from_file_location('drive_test_stage',
-                                                  str(SCRIPTS / 'stage_draft.py'))
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    def test_missing_download_is_rejected(self):
+        process = self.run_cli('--file', str(self.workspace / 'nope.txt'),
+                               '--workspace', str(self.workspace))
+        self.assertEqual(process.returncode, 1)
+        self.assertIn('Drive download not found', process.stderr)
+        self.assertEqual(process.stdout, '')
+
+    def test_unsupported_download_type_is_rejected(self):
+        download = self.workspace / 'sheet.csv'
+        download.write_text('a,b\n', encoding='utf-8')
+        process = self.run_cli('--file', str(download), '--workspace', str(self.workspace))
+        self.assertEqual(process.returncode, 1)
+        self.assertIn('Unsupported Drive file type: .csv', process.stderr)
+
+    def test_empty_export_is_rejected(self):
+        download = self.workspace / 'empty.txt'
+        download.write_text('   \n\n', encoding='utf-8')
+        process = self.run_cli('--file', str(download), '--workspace', str(self.workspace))
+        self.assertEqual(process.returncode, 1)
+        self.assertIn('contains no text', process.stderr)
+
+    def test_empty_stdin_is_rejected(self):
+        process = self.run_cli('--stdin', '--workspace', str(self.workspace), stdin='  \n')
+        self.assertEqual(process.returncode, 1)
+        self.assertIn('No text was piped', process.stderr)
+
+    def test_workspace_is_required(self):
+        process = self.run_cli('--file', 'x.txt')
+        self.assertEqual(process.returncode, 2)
+        self.assertIn('--workspace', process.stderr)
+
+    def test_a_source_is_required(self):
+        process = self.run_cli('--workspace', str(self.workspace))
+        self.assertEqual(process.returncode, 2)
+        self.assertIn('--file', process.stderr)
+
+    def test_file_and_stdin_are_mutually_exclusive(self):
+        process = self.run_cli('--file', 'x.txt', '--stdin', '--workspace', str(self.workspace))
+        self.assertEqual(process.returncode, 2)
+
+    def test_bad_drive_id_is_rejected(self):
+        download = self.workspace / 'ok.txt'
+        download.write_text('body\n', encoding='utf-8')
+        process = self.run_cli('--file', str(download), '--id', 'not a valid id!',
+                               '--workspace', str(self.workspace))
+        self.assertEqual(process.returncode, 1)
+        self.assertIn('--id must be a Google Drive file ID', process.stderr)
+
+    def test_blank_name_and_non_https_link_are_rejected(self):
+        download = self.workspace / 'ok.txt'
+        download.write_text('body\n', encoding='utf-8')
+        for extra, message in ((['--name', '  '], '--name must not be blank'),
+                               (['--link', 'http://insecure.example/x'], '--link must be an HTTPS')):
+            process = self.run_cli('--file', str(download), '--workspace', str(self.workspace), *extra)
+            self.assertEqual(process.returncode, 1, process.stderr)
+            self.assertIn(message, process.stderr)
+
+    def test_broken_docx_is_rejected_cleanly(self):
+        download = self.workspace / 'broken.docx'
+        download.write_bytes(b'not a zip')
+        process = self.run_cli('--file', str(download), '--workspace', str(self.workspace))
+        self.assertEqual(process.returncode, 1)
+        self.assertIn('Cannot read the Drive download', process.stderr)
+
+    # -- units ---------------------------------------------------------------- #
+
+    def test_stage_extension_follows_the_source_name(self):
+        self.assertEqual(drive.stage_extension('Client Launch Post.md'), 'md')
+        self.assertEqual(drive.stage_extension('export.txt'), 'txt')
+        self.assertEqual(drive.stage_extension('Launch (v2).DOCX'), 'md')
+        self.assertEqual(drive.stage_extension(None), 'md')
+
+    def test_stdin_decoder_matches_read_post_bytes(self):
+        raw = b'parity\r\nsecond\r\n'
+        self.assertEqual(raw.decode('utf-8-sig').replace('\r\n', '\n').replace('\r', '\n'),
+                         cli.read_post_bytes(raw, '.txt'))
+
+    def test_main_prints_error_not_traceback(self):
+        argv = sys.argv
+        sys.argv = ['drive_draft.py', '--file', '/definitely/missing.txt',
+                    '--workspace', str(self.workspace)]
+        out, err = io.StringIO(), io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            code = drive.main()
+        sys.argv = argv
+        self.assertEqual(code, 1)
+        self.assertTrue(err.getvalue().startswith('ERROR: '), err.getvalue())
+        self.assertNotIn('Traceback', err.getvalue())
 
 
 if __name__ == '__main__':

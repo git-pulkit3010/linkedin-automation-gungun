@@ -1,6 +1,6 @@
 ---
 name: linkedin-publisher
-description: Use when drafting, retrieving a Google Drive draft, previewing, or publishing a LinkedIn text post through Composio. Standard-library-only Python scripts; every post is previewed and explicitly approved before it goes live.
+description: Use when drafting, retrieving a Google Drive draft through Cowork's native Drive connector, previewing, or publishing a LinkedIn text post through Composio. Standard-library-only Python scripts; every post is previewed and explicitly approved before it goes live.
 ---
 
 # LinkedIn publisher
@@ -31,8 +31,10 @@ analytics, or any other network. This skill posts plain text only.
    LINKEDIN_AUTH_CONFIG_ID=...     # optional - only for the one-time account connection
    COMPOSIO_CONNECTED_ACCOUNT_ID=  # optional - pin one account when several are ACTIVE
    LINKEDIN_AUTHOR_URN=            # optional - urn:li:person:... if auto-lookup fails
-   GOOGLEDRIVE_CONNECTED_ACCOUNT_ID=  # optional - pin one Google Drive account
    ```
+
+   Nothing here is needed for Google Drive: Drive drafts are read with Cowork's native Drive
+   connector, not through Composio. Staging a Drive draft needs no credentials at all.
 
 3. Verify with the read-only checker. It prints what it found, masks every secret, and never posts:
 
@@ -46,9 +48,9 @@ analytics, or any other network. This skill posts plain text only.
 4. Connect the LinkedIn account to Composio once, from a machine that has the optional `composio`
    SDK (see the repo README). This skill itself needs nothing installed.
 
-5. For Drive drafts, connect Google Drive to the **same** Composio project and user ID, with read
-   access to the client's draft files. The Composio API key needs proxy execute permission. If there
-   are multiple ACTIVE Drive connections, pin the correct one in `.env`.
+5. For Drive drafts, the host already provides a native Google Drive connector (the Cowork Google
+   Drive plugin). No Composio Drive connection, no extra keys, no proxy permission. If it is not
+   connected, ask the user to connect it before promising a Drive import.
 
 Never ask the user to paste their API key into chat, never write it into a file you generate, and
 never echo it in a command or a log.
@@ -97,20 +99,32 @@ enforces it (`--max-chars`, default 3000).
 
 ### c. Stage the draft
 
-If the source is on Google Drive, first locate it. Use the user's exact link when available; otherwise
-search by filename and show the matching titles/IDs if more than one is plausible. Do not guess which
-document they meant. Import the selected file into the workspace's `posts/` directory:
+If the source is on Google Drive, get it with the host's native Drive connector — the Google Drive
+plugin Cowork provides. Do not route Drive through Composio: no Composio Drive connection, no proxy,
+no extra keys. You do the Drive work yourself, in this order:
+
+1. **Locate** the document the user means with the Drive connector — by the exact link they gave you,
+   or by searching for the filename. If more than one plausible match comes back, show the user the
+   titles and ask; never guess which document they meant.
+2. **Read** it. A Google Doc is exported as plain text; stored `.txt`, `.md`, and `.docx` files are
+   downloaded as they are.
+3. **Save** what you read to a local file (a Google Doc export belongs in a `.txt` file), then hand
+   that file to the script to archive it:
 
 ```bash
-python3 <skill_root>/scripts/drive_draft.py --search "filename phrase" --json
-python3 <skill_root>/scripts/drive_draft.py --file-id <selected ID> --workspace <workspace> --json
-# Or use --url <Google Docs/Drive link> instead of --file-id.
+python3 <skill_root>/scripts/drive_draft.py --file /path/to/drive-export.txt \
+    --name "Client Launch Post" --id FILE_ID --workspace <workspace> --json
+# Or pipe the export instead of saving it first:
+python3 <skill_root>/scripts/drive_draft.py --stdin --name "Client Launch Post" \
+    --workspace <workspace> --json < export.txt
 ```
 
-The importer accepts Google Docs and stored `.txt`, `.md`, or `.docx` files. It returns the Drive
-source metadata and local staged `path`; it never publishes. Review the imported text and format it
-for LinkedIn plain text. If changes are needed, save a new staged version with `stage_draft.py`. Show
-the user which Drive document was used and retain the staged file for the preview and publish steps.
+Pass `--name`, `--id`, and `--link` from the Drive document so the staged filename and the returned
+`source` block record where the draft came from; omit any you do not have. `--id` and `--link` are
+recorded only — the script calls nothing and goes nowhere. It returns the staged `path` and
+`char_count`, and it never publishes. Review the imported text and format it for LinkedIn plain text
+(b). If changes are needed, save a new staged version with `stage_draft.py`. Show the user which
+Drive document was used and retain the staged file for the preview and publish steps.
 
 Archive every iteration so the user keeps a local copy:
 

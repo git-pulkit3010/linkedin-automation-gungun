@@ -24,9 +24,11 @@ linkedin-publisher/
 ├── scripts/
 │   ├── post_linkedin.py  # inspect / preview / publish a post
 │   ├── stage_draft.py    # archive a draft into <workspace>/posts/
+│   ├── drive_draft.py    # archive a draft fetched by the native Drive connector
 │   └── doctor.py         # read-only setup checker (masks every secret)
 └── tests/
-    └── test_post_linkedin.py  # offline unittest suite, no network, no credentials
+    ├── test_post_linkedin.py  # offline unittest suite, no network, no credentials
+    └── test_drive_draft.py    # offline suite for the Drive staging path
 ```
 
 ## Install it into Claude Cowork
@@ -58,33 +60,46 @@ A variable that is already set in the real environment always beats the file's v
 fills in what is missing. `.env` is git-ignored in this repository — do not commit it.
 
 Required keys: `COMPOSIO_API_KEY`, `COMPOSIO_USER_ID`.
-Optional: `COMPOSIO_CONNECTED_ACCOUNT_ID`, `GOOGLEDRIVE_CONNECTED_ACCOUNT_ID`,
-`LINKEDIN_AUTHOR_URN`, `LINKEDIN_AUTH_CONFIG_ID`, `GOOGLEDRIVE_AUTH_CONFIG_ID`.
-The auth config IDs are only for the matching one-time connection helpers outside this bundle.
+Optional: `COMPOSIO_CONNECTED_ACCOUNT_ID`, `LINKEDIN_AUTHOR_URN`, `LINKEDIN_AUTH_CONFIG_ID`.
+The auth config ID is only for the one-time LinkedIn connection helper outside this bundle.
+Google Drive needs nothing from this file.
 
-## Quickstart
+## Google Drive drafts
 
-Connect **Google Drive** to the same Composio project and `COMPOSIO_USER_ID` as LinkedIn. Grant
-read access to the client's drafts. If several Drive accounts are connected, set
-`GOOGLEDRIVE_CONNECTED_ACCOUNT_ID` in `.env` to select the intended one. Drive import uses Composio's
-authenticated proxy; the API key needs proxy execute permission. A Google Doc is exported as plain
-text; Drive `.txt`, `.md`, and `.docx` files are downloaded and their text is staged. No Drive file is
-modified, and no post is published by the import command.
-In the full repository, create a Google Drive auth config in the Composio dashboard, set
-`GOOGLEDRIVE_AUTH_CONFIG_ID` in `.env`, and run `python conn_googledrive_composio.py` once to get the
-client authorization URL. The connection helper is outside the standalone bundle.
+Drive is read with the **native Google Drive connector** the host already provides — in Claude
+Cowork, the Google Drive plugin; elsewhere, any connected Drive/Google Docs tool. LinkedIn stays on
+Composio; the two are deliberately separate, so staging a Drive draft needs no credentials at all.
+
+The agent does the Drive work: find the document the user means (exact link first, otherwise a
+filename search — show the options and ask if more than one match is plausible), read it (a Google
+Doc is exported as plain text; stored `.txt`, `.md`, and `.docx` files download as they are), save it
+locally, then archive it:
 
 ```bash
-# Find candidates by filename (read-only); select the intended ID from the result.
-python3 scripts/drive_draft.py --search "campaign draft" --json
+# A Google Doc exported to plain text, or a downloaded .txt / .md / .docx
+python3 scripts/drive_draft.py --file ./drive-export.txt \
+    --name "Client Launch Post" --id FILE_ID --link "https://docs.google.com/document/d/FILE_ID/edit" \
+    --workspace /absolute/path/to/workspace --json
 
-# Import that exact file (or use --url with a Google Docs/Drive link).
-python3 scripts/drive_draft.py --file-id FILE_ID --workspace /absolute/path/to/workspace --json
+# Or pipe the export straight in, no intermediate file
+python3 scripts/drive_draft.py --stdin --name "Client Launch Post" \
+    --workspace /absolute/path/to/workspace --json < export.txt
+```
 
-# Preview the returned path, obtain approval, then publish that same staged file.
+`drive_draft.py` only stages: it validates the text, writes `<workspace>/posts/YYYY-MM-DD-<slug>.<ext>`
+(`-2`, `-3`, ... instead of overwriting), and prints the path — or, with `--json`, one object with
+the Drive `source` (name / id / link, whichever you passed), `path`, and `char_count`. It never
+contacts Composio, never touches Google Drive, and never publishes. Accepts Google Doc exports and
+stored `.txt`, `.md`, `.docx` files; anything else is rejected with one `ERROR:` line on stderr.
+
+Then continue with the normal flow on the staged file:
+
+```bash
 python3 scripts/post_linkedin.py --dry-run --file /absolute/path/to/workspace/posts/DATE-draft.md --json
 python3 scripts/post_linkedin.py --publish --file /absolute/path/to/workspace/posts/DATE-draft.md --json
 ```
+
+## Quickstart
 
 ```bash
 # 1. check the setup (read-only, secrets masked)
@@ -112,6 +127,8 @@ python3 scripts/stage_draft.py --workspace /absolute/path/to/workspace --list
 | `post_linkedin.py --dry-run --file draft.docx` | Resolves account and author, prints the exact payload. Never publishes. |
 | `post_linkedin.py --publish --file draft.md` | Publishes a real, public LinkedIn post. |
 | `post_linkedin.py --publish 'Inline text'` | Publishes text typed on the command line. |
+| `drive_draft.py --file ./drive-export.txt --workspace DIR` | Archives a draft fetched by the native Drive connector. No credentials, no network. |
+| `drive_draft.py --stdin --name "Doc" --workspace DIR` | Same, from a piped Google Doc export. |
 | `--json` | Machine-readable output on stdout and nothing else, for an agent to parse. |
 | `--extra '{"visibility": "CONNECTIONS"}'` | Extra post fields; unknown keys are rejected. |
 | `--max-chars 3000` | Refuses posts longer than the limit (default 3000). |
